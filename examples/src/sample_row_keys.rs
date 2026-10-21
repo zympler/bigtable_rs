@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(res) = response.message().await? {
         println!(
             "key: {}, offset_bytes: {}",
-            String::from_utf8(res.row_key).unwrap(),
+            std::str::from_utf8(&res.row_key).unwrap(),
             res.offset_bytes
         );
     }

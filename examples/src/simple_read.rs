@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::error::Error;
 use std::time::Duration;
 
@@ -41,8 +42,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rows: Some(RowSet {
             row_keys: vec![], // use this field to put keys for reading specific rows
             row_ranges: vec![RowRange {
-                start_key: Some(StartKey::StartKeyClosed(key_start.into_bytes())),
-                end_key: Some(EndKey::EndKeyOpen(key_end.into_bytes())),
+                start_key: Some(StartKey::StartKeyClosed(key_start.into())),
+                end_key: Some(EndKey::EndKeyOpen(key_end.into())),
             }],
         }),
         filter: Some(RowFilter {
@@ -52,7 +53,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         filter: Some(Filter::FamilyNameRegexFilter("cf1".to_owned())),
                     },
                     RowFilter {
-                        filter: Some(Filter::ColumnQualifierRegexFilter("c1".as_bytes().to_vec())),
+                        filter: Some(Filter::ColumnQualifierRegexFilter(Bytes::from_static(
+                            b"c1",
+                        ))),
                     },
                     RowFilter {
                         filter: Some(Filter::CellsPerColumnLimitFilter(2)),
@@ -68,13 +71,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // simply print results for example usage
     response.into_iter().for_each(|(key, data)| {
-        println!("------------\n{}", String::from_utf8(key.clone()).unwrap());
+        println!("------------\n{}", std::str::from_utf8(&key).unwrap());
         data.into_iter().for_each(|row_cell| {
             println!(
                 "    [{}:{}] \"{}\" @ {}",
                 row_cell.family_name,
-                String::from_utf8(row_cell.qualifier).unwrap(),
-                String::from_utf8(row_cell.value).unwrap(),
+                std::str::from_utf8(&row_cell.qualifier).unwrap(),
+                std::str::from_utf8(&row_cell.value).unwrap(),
                 row_cell.timestamp_micros
             )
         })
