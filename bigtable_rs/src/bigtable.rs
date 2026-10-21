@@ -4,6 +4,7 @@
 //! Example usage:
 //! ```rust,no_run
 //! use bigtable_rs::bigtable;
+//! use bytes::Bytes;
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::row_filter::{Chain, Filter};
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::row_range::{EndKey, StartKey};
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{ReadRowsRequest, RowFilter, RowRange, RowSet};
@@ -43,8 +44,8 @@
 //!         rows: Some(RowSet {
 //!             row_keys: vec![], // use this field to put keys for reading specific rows
 //!             row_ranges: vec![RowRange {
-//!                 start_key: Some(StartKey::StartKeyClosed(key_start.into_bytes())),
-//!                 end_key: Some(EndKey::EndKeyOpen(key_end.into_bytes())),
+//!                 start_key: Some(StartKey::StartKeyClosed(key_start.into())),
+//!                 end_key: Some(EndKey::EndKeyOpen(key_end.into())),
 //!             }],
 //!         }),
 //!         filter: Some(RowFilter {
@@ -54,7 +55,7 @@
 //!                         filter: Some(Filter::FamilyNameRegexFilter("cf1".to_owned())),
 //!                     },
 //!                     RowFilter {
-//!                         filter: Some(Filter::ColumnQualifierRegexFilter("c1".as_bytes().to_vec())),
+//!                         filter: Some(Filter::ColumnQualifierRegexFilter(Bytes::from_static(b"c1"))),
 //!                     },
 //!                     RowFilter {
 //!                         filter: Some(Filter::CellsPerColumnLimitFilter(1)),
@@ -70,13 +71,13 @@
 //!
 //!     // simply print results for example usage
 //!     response.into_iter().for_each(|(key, data)| {
-//!         println!("------------\n{}", String::from_utf8(key.clone()).unwrap());
+//!         println!("------------\n{}", std::str::from_utf8(&key).unwrap());
 //!         data.into_iter().for_each(|row_cell| {
 //!             println!(
 //!                 "    [{}:{}] \"{}\" @ {}",
 //!                 row_cell.family_name,
-//!                 String::from_utf8(row_cell.qualifier).unwrap(),
-//!                 String::from_utf8(row_cell.value).unwrap(),
+//!                 std::str::from_utf8(&row_cell.qualifier).unwrap(),
+//!                 std::str::from_utf8(&row_cell.value).unwrap(),
 //!                 row_cell.timestamp_micros
 //!             )
 //!         })
@@ -92,18 +93,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use backoff::backoff::Backoff;
+use bytes::Bytes;
 use futures_util::Stream;
 use gcp_auth::TokenProvider;
 use log::info;
 use thiserror::Error;
 use tokio::net::UnixStream;
-use tonic::IntoRequest;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Endpoint;
+use tonic::IntoRequest;
 use tonic::{
-    Response,
     codec::Streaming,
-    transport::{Channel, ClientTlsConfig, channel::Change},
+    transport::{channel::Change, Channel, ClientTlsConfig},
+    Response,
 };
 use tower::ServiceBuilder;
 
@@ -147,8 +149,8 @@ impl_routing_metadata!(MutateRowsRequest);
 impl_routing_metadata!(CheckAndMutateRowRequest);
 impl_routing_metadata!(SampleRowKeysRequest);
 
-/// An alias for Vec<u8> as row key
-type RowKey = Vec<u8>;
+/// An alias for Bytes as row key
+pub type RowKey = Bytes;
 /// A convenient Result type
 type Result<T> = std::result::Result<T, Error>;
 
@@ -156,8 +158,8 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub struct RowCell {
     pub family_name: String,
-    pub qualifier: Vec<u8>,
-    pub value: Vec<u8>,
+    pub qualifier: Bytes,
+    pub value: Bytes,
     pub timestamp_micros: i64,
     pub labels: Vec<String>,
 }
@@ -670,7 +672,7 @@ impl BigTable {
     pub async fn read_rows_with_prefix(
         &mut self,
         mut request: ReadRowsRequest,
-        prefix: Vec<u8>,
+        prefix: impl Into<Bytes>,
     ) -> Result<Vec<(RowKey, Vec<RowCell>)>> {
         let row_range = get_row_range_from_prefix(prefix);
         request.rows = Some(RowSet {
@@ -710,7 +712,7 @@ impl BigTable {
     pub async fn stream_rows_with_prefix(
         &mut self,
         mut request: ReadRowsRequest,
-        prefix: Vec<u8>,
+        prefix: impl Into<Bytes>,
     ) -> Result<impl Stream<Item = Result<(RowKey, Vec<RowCell>)>>> {
         let row_range = get_row_range_from_prefix(prefix);
         request.rows = Some(RowSet {

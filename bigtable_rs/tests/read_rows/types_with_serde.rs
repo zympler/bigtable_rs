@@ -67,12 +67,12 @@ impl From<CellChunkWithSerde> for CellChunk {
         };
 
         Self {
-            row_key: proxy.row_key,
+            row_key: proxy.row_key.into(),
             family_name: proxy.family_name,
             qualifier: proxy.qualifier,
             timestamp_micros: proxy.timestamp_micros,
             labels: proxy.labels,
-            value: proxy.value,
+            value: proxy.value.into(),
             value_size: proxy.value_size,
             row_status,
         }

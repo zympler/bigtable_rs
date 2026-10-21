@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::time::Duration;
 
 use bigtable_rs::bigtable::{BigTable, BigTableConnection};
@@ -71,13 +72,13 @@ async fn post_handler(
 ) -> Result<Box<dyn Reply>, Rejection> {
     let request = MutateRowRequest {
         table_name: bigtable.get_full_table_name(&TABLE_NAME),
-        row_key: key.into_bytes(),
+        row_key: key.into(),
         mutations: vec![Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: FAMILY_NAME.to_owned(),
-                column_qualifier: QUALIFIER_NAME.to_owned().into_bytes(),
+                column_qualifier: Bytes::from_static(QUALIFIER_NAME.as_bytes()),
                 timestamp_micros: -1, // IMPORTANT: Don't leave it empty. Use -1 for current Bigtable server time.
-                value: value.value.into_bytes(),
+                value: value.value.into(),
             })),
         }],
         ..MutateRowRequest::default()
@@ -102,7 +103,7 @@ async fn get_handler(key: String, mut bigtable: BigTable) -> Result<Box<dyn Repl
         table_name: bigtable.get_full_table_name(&TABLE_NAME),
         rows_limit: 10,
         rows: Some(RowSet {
-            row_keys: vec![key.clone().into_bytes()],
+            row_keys: vec![key.clone().into()],
             row_ranges: vec![],
         }),
         filter: Some(RowFilter {
@@ -112,9 +113,9 @@ async fn get_handler(key: String, mut bigtable: BigTable) -> Result<Box<dyn Repl
                         filter: Some(Filter::FamilyNameRegexFilter(FAMILY_NAME.to_owned())),
                     },
                     RowFilter {
-                        filter: Some(Filter::ColumnQualifierRegexFilter(
-                            QUALIFIER_NAME.as_bytes().to_vec(),
-                        )),
+                        filter: Some(Filter::ColumnQualifierRegexFilter(Bytes::from_static(
+                            QUALIFIER_NAME.as_bytes(),
+                        ))),
                     },
                     RowFilter {
                         filter: Some(Filter::CellsPerColumnLimitFilter(1)),
@@ -141,7 +142,7 @@ async fn get_handler(key: String, mut bigtable: BigTable) -> Result<Box<dyn Repl
         Some((_key, mut vec)) => Ok(Box::new(
             warp::reply::json(
                 &vec.pop() // we mostly will have only 1 cell
-                    .map(|row_cell| String::from_utf8(row_cell.value).unwrap())
+                    .map(|row_cell| String::from_utf8(row_cell.value.to_vec()).unwrap())
                     .unwrap_or("".to_owned()),
             )
             .into_response(),

@@ -73,11 +73,11 @@ fn read_rows_test_from_json_can_all_pass() {
             .flat_map(|r| {
                 let (row_key, row_cells) = r.unwrap();
                 row_cells.into_iter().map(move |cell| ReadRowTestResult {
-                    row_key: String::from_utf8(row_key.clone()).unwrap(),
+                    row_key: String::from_utf8(row_key.to_vec()).unwrap(),
                     family_name: cell.family_name,
-                    qualifier: String::from_utf8(cell.qualifier).unwrap(),
+                    qualifier: String::from_utf8(cell.qualifier.to_vec()).unwrap(),
                     timestamp_micros: cell.timestamp_micros,
-                    value: String::from_utf8(cell.value).unwrap(),
+                    value: String::from_utf8(cell.value.to_vec()).unwrap(),
                     label: cell.labels.first().unwrap_or(&"".to_owned()).clone(),
                     error: false,
                 })

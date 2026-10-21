@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use bytes::{Bytes, BytesMut};
+
 use futures_util::stream::iter;
 use futures_util::{Stream, StreamExt};
 use log::trace;
@@ -60,26 +62,24 @@ pub fn decode_read_rows_response_to_vec(
     let mut cell_family_name = None;
     let mut cell_name = None;
     let mut cell_timestamp = 0;
-    let mut cell_value = vec![];
-    // If this CellChunk is part of a chunked cell value and this is
-    // not the final chunk of that cell, value_size will be set to the
-    // total length of the cell value.  The client can use this size
-    // to pre-allocate memory to hold the full cell value.
-    let mut cell_value_size: usize;
+    // Only used when a cell value is split over multiple chunks. If this CellChunk is
+    // part of a chunked cell value and this is not the final chunk of that cell,
+    // value_size will be set to the total length of the cell value.
+    let mut cell_value = BytesMut::new();
     let mut cell_labels = vec![];
 
     let mut start_new_cell = false;
     let mut committed_row_cell_count = 0usize;
     let mut start_new_row = false; // Marker for starting a new row. A commit will set this as false
 
-    let mut key_set: HashSet<Vec<u8>> = HashSet::new();
+    let mut key_set: HashSet<Bytes> = HashSet::new();
     let mut chunk_value_is_empty: bool;
 
     if chunks.is_empty() {
         return rows;
     }
 
-    for (i, mut chunk) in chunks.into_iter().enumerate() {
+    for (i, chunk) in chunks.into_iter().enumerate() {
         // The comments for `read_rows_response::CellChunk` provide essential details for
         // understanding how the below decoding works...
         trace!("chunk {}: {:?}", i, chunk.value);
@@ -123,40 +123,42 @@ pub fn decode_read_rows_response_to_vec(
 
         // start a new cell with the existing cell_name or new cell_name (chunk.qualifier)
         if (start_new_cell && cell_name.is_some()) || chunk.qualifier.is_some() {
-            if chunk.value_size == 0 {
-                cell_value_size = chunk.value.len();
-            } else {
-                cell_value_size = chunk.value_size as usize;
-            }
-            cell_value = Vec::with_capacity(cell_value_size);
+            cell_value = BytesMut::with_capacity(chunk.value_size as usize);
             // when a new cell with the same qualifier starts, we need to reuse the old cell_name and cell_family_name
             cell_family_name = chunk.family_name.or(cell_family_name);
-            cell_name = chunk.qualifier.or(cell_name);
+            cell_name = chunk.qualifier.map(Bytes::from).or(cell_name);
             cell_timestamp = chunk.timestamp_micros;
             cell_labels = chunk.labels;
             start_new_cell = false;
         }
 
         chunk_value_is_empty = chunk.value.is_empty();
-        cell_value.append(&mut chunk.value);
 
         // last chunk for the cell?
         if chunk.value_size == 0 {
+            // A cell that fits in one chunk keeps the received buffer without copying
+            let value = if cell_value.is_empty() {
+                chunk.value
+            } else {
+                cell_value.extend_from_slice(&chunk.value);
+                std::mem::take(&mut cell_value).freeze()
+            };
             // Close up the cell
             if cell_name.is_some() {
                 let row_cell = RowCell {
                     family_name: cell_family_name.clone().unwrap_or("".to_owned()),
                     qualifier: cell_name.clone().unwrap(), // checked above
-                    value: cell_value,
+                    value,
                     timestamp_micros: cell_timestamp,
                     labels: cell_labels,
                 };
-                cell_value = vec![]; // borrow checker
                 cell_labels = vec![];
                 row_data.push(row_cell);
             }
             // make sure we start a new cell in case the qualifier doesn't change
             start_new_cell = true;
+        } else {
+            cell_value.extend_from_slice(&chunk.value);
         }
 
         // End of a row?

@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::error::Error;
 use std::time::Duration;
 
@@ -37,13 +38,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // a request to write a single row
     let request = MutateRowRequest {
         table_name: bigtable.get_full_table_name(table_name),
-        row_key: key.clone().into_bytes(),
+        row_key: key.clone().into(),
         mutations: vec![Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: "cf1".to_owned(),
-                column_qualifier: "c1".to_owned().into_bytes(),
+                column_qualifier: Bytes::from_static(b"c1"),
                 timestamp_micros: -1, // IMPORTANT: Don't leave it empty. Use -1 for current Bigtable server time.
-                value: "a new write value".to_owned().into_bytes(),
+                value: Bytes::from_static(b"a new write value"),
             })),
         }],
         ..MutateRowRequest::default()
@@ -56,13 +57,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let request = MutateRowsRequest {
         table_name: bigtable.get_full_table_name(table_name),
         entries: vec![Entry {
-            row_key: key.clone().into_bytes(),
+            row_key: key.clone().into(),
             mutations: vec![Mutation {
                 mutation: Some(mutation::Mutation::SetCell(SetCell {
                     family_name: "cf1".to_owned(),
-                    column_qualifier: "c1".to_owned().into_bytes(),
+                    column_qualifier: Bytes::from_static(b"c1"),
                     timestamp_micros: -1, // IMPORTANT: Don't leave it empty. Use -1 for current Bigtable server time.
-                    value: "a newer write value".to_owned().into_bytes(),
+                    value: Bytes::from_static(b"a newer write value"),
                 })),
             }],
             ..Entry::default()
@@ -78,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         table_name: bigtable.get_full_table_name(table_name),
         rows_limit: 10,
         rows: Some(RowSet {
-            row_keys: vec![key.clone().into_bytes()],
+            row_keys: vec![key.clone().into()],
             row_ranges: vec![],
         }),
         filter: Some(RowFilter {
@@ -92,13 +93,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // simply print results for example usage
     response.into_iter().for_each(|(key, data)| {
-        println!("------------\n{}", String::from_utf8(key.clone()).unwrap());
+        println!("------------\n{}", std::str::from_utf8(&key).unwrap());
         data.into_iter().for_each(|row_cell| {
             println!(
                 "    [{}:{}] \"{}\" @ {}",
                 row_cell.family_name,
-                String::from_utf8(row_cell.qualifier).unwrap(),
-                String::from_utf8(row_cell.value).unwrap(),
+                std::str::from_utf8(&row_cell.qualifier).unwrap(),
+                std::str::from_utf8(&row_cell.value).unwrap(),
                 row_cell.timestamp_micros
             )
         })

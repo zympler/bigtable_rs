@@ -9,6 +9,7 @@
 
 #![cfg(feature = "integration_tests")]
 
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -113,13 +114,13 @@ async fn test_write_and_read_row() {
     // Write a row
     let write_request = MutateRowRequest {
         table_name: bigtable.get_full_table_name(TABLE_NAME),
-        row_key: test_key.clone().into_bytes(),
+        row_key: test_key.clone().into(),
         mutations: vec![Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: "cf1".to_owned(),
-                column_qualifier: "c1".to_owned().into_bytes(),
+                column_qualifier: "c1".to_owned().into(),
                 timestamp_micros: -1,
-                value: test_value.to_owned().into_bytes(),
+                value: test_value.to_owned().into(),
             })),
         }],
         ..MutateRowRequest::default()
@@ -137,7 +138,7 @@ async fn test_write_and_read_row() {
         table_name: bigtable.get_full_table_name(TABLE_NAME),
         rows_limit: 1,
         rows: Some(RowSet {
-            row_keys: vec![test_key.clone().into_bytes()],
+            row_keys: vec![test_key.clone().into()],
             row_ranges: vec![],
         }),
         filter: Some(RowFilter {
@@ -154,7 +155,7 @@ async fn test_write_and_read_row() {
 
     let (key, cells) = &rows[0];
     assert_eq!(
-        String::from_utf8(key.clone()).unwrap(),
+        std::str::from_utf8(key).unwrap(),
         test_key,
         "Row key mismatch"
     );
@@ -162,8 +163,8 @@ async fn test_write_and_read_row() {
 
     let cell = &cells[0];
     assert_eq!(cell.family_name, "cf1");
-    assert_eq!(String::from_utf8(cell.qualifier.clone()).unwrap(), "c1");
-    assert_eq!(String::from_utf8(cell.value.clone()).unwrap(), test_value);
+    assert_eq!(std::str::from_utf8(&cell.qualifier).unwrap(), "c1");
+    assert_eq!(std::str::from_utf8(&cell.value).unwrap(), test_value);
 }
 
 #[tokio::test]
@@ -180,13 +181,13 @@ async fn test_read_rows_with_range() {
         let key = format!("{}{}", prefix, i);
         let write_request = MutateRowRequest {
             table_name: bigtable.get_full_table_name(TABLE_NAME),
-            row_key: key.into_bytes(),
+            row_key: key.into(),
             mutations: vec![Mutation {
                 mutation: Some(mutation::Mutation::SetCell(SetCell {
                     family_name: "cf1".to_owned(),
-                    column_qualifier: "c1".to_owned().into_bytes(),
+                    column_qualifier: "c1".to_owned().into(),
                     timestamp_micros: -1,
-                    value: format!("value{}", i).into_bytes(),
+                    value: format!("value{}", i).into(),
                 })),
             }],
             ..MutateRowRequest::default()
@@ -204,10 +205,8 @@ async fn test_read_rows_with_range() {
         rows: Some(RowSet {
             row_keys: vec![],
             row_ranges: vec![RowRange {
-                start_key: Some(StartKey::StartKeyClosed(
-                    format!("{}1", prefix).into_bytes(),
-                )),
-                end_key: Some(EndKey::EndKeyOpen(format!("{}4", prefix).into_bytes())),
+                start_key: Some(StartKey::StartKeyClosed(format!("{}1", prefix).into())),
+                end_key: Some(EndKey::EndKeyOpen(format!("{}4", prefix).into())),
             }],
         }),
         filter: Some(RowFilter {
@@ -246,32 +245,32 @@ async fn test_read_rows_with_filter_chain() {
         Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: "cf1".to_owned(),
-                column_qualifier: "c1".to_owned().into_bytes(),
+                column_qualifier: "c1".to_owned().into(),
                 timestamp_micros: -1,
-                value: "cf1_c1_value".to_owned().into_bytes(),
+                value: "cf1_c1_value".to_owned().into(),
             })),
         },
         Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: "cf1".to_owned(),
-                column_qualifier: "c2".to_owned().into_bytes(),
+                column_qualifier: "c2".to_owned().into(),
                 timestamp_micros: -1,
-                value: "cf1_c2_value".to_owned().into_bytes(),
+                value: "cf1_c2_value".to_owned().into(),
             })),
         },
         Mutation {
             mutation: Some(mutation::Mutation::SetCell(SetCell {
                 family_name: "cf2".to_owned(),
-                column_qualifier: "c1".to_owned().into_bytes(),
+                column_qualifier: "c1".to_owned().into(),
                 timestamp_micros: -1,
-                value: "cf2_c1_value".to_owned().into_bytes(),
+                value: "cf2_c1_value".to_owned().into(),
             })),
         },
     ];
 
     let write_request = MutateRowRequest {
         table_name: bigtable.get_full_table_name(TABLE_NAME),
-        row_key: test_key.clone().into_bytes(),
+        row_key: test_key.clone().into(),
         mutations,
         ..MutateRowRequest::default()
     };
@@ -286,7 +285,7 @@ async fn test_read_rows_with_filter_chain() {
         table_name: bigtable.get_full_table_name(TABLE_NAME),
         rows_limit: 1,
         rows: Some(RowSet {
-            row_keys: vec![test_key.clone().into_bytes()],
+            row_keys: vec![test_key.clone().into()],
             row_ranges: vec![],
         }),
         filter: Some(RowFilter {
@@ -296,7 +295,9 @@ async fn test_read_rows_with_filter_chain() {
                         filter: Some(Filter::FamilyNameRegexFilter("cf1".to_owned())),
                     },
                     RowFilter {
-                        filter: Some(Filter::ColumnQualifierRegexFilter("c1".as_bytes().to_vec())),
+                        filter: Some(Filter::ColumnQualifierRegexFilter(Bytes::from_static(
+                            b"c1",
+                        ))),
                     },
                 ],
             })),
@@ -322,7 +323,7 @@ async fn test_read_rows_with_filter_chain() {
         cells.len()
     );
     assert_eq!(cells[0].family_name, "cf1");
-    assert_eq!(String::from_utf8(cells[0].qualifier.clone()).unwrap(), "c1");
+    assert_eq!(std::str::from_utf8(&cells[0].qualifier).unwrap(), "c1");
 }
 
 #[tokio::test]
@@ -339,13 +340,13 @@ async fn test_stream_rows() {
         let key = format!("{}{}", prefix, i);
         let write_request = MutateRowRequest {
             table_name: bigtable.get_full_table_name(TABLE_NAME),
-            row_key: key.into_bytes(),
+            row_key: key.into(),
             mutations: vec![Mutation {
                 mutation: Some(mutation::Mutation::SetCell(SetCell {
                     family_name: "cf1".to_owned(),
-                    column_qualifier: "c1".to_owned().into_bytes(),
+                    column_qualifier: "c1".to_owned().into(),
                     timestamp_micros: -1,
-                    value: format!("stream_value{}", i).into_bytes(),
+                    value: format!("stream_value{}", i).into(),
                 })),
             }],
             ..MutateRowRequest::default()
@@ -363,10 +364,8 @@ async fn test_stream_rows() {
         rows: Some(RowSet {
             row_keys: vec![],
             row_ranges: vec![RowRange {
-                start_key: Some(StartKey::StartKeyClosed(
-                    format!("{}1", prefix).into_bytes(),
-                )),
-                end_key: Some(EndKey::EndKeyOpen(format!("{}9", prefix).into_bytes())),
+                start_key: Some(StartKey::StartKeyClosed(format!("{}1", prefix).into())),
+                end_key: Some(EndKey::EndKeyOpen(format!("{}9", prefix).into())),
             }],
         }),
         filter: Some(RowFilter {
@@ -383,7 +382,7 @@ async fn test_stream_rows() {
     let mut count = 0;
     while let Some((key, cells)) = stream.try_next().await.expect("Stream error") {
         assert!(
-            String::from_utf8(key).unwrap().starts_with(&prefix),
+            std::str::from_utf8(&key).unwrap().starts_with(&prefix),
             "Unexpected key prefix"
         );
         assert!(!cells.is_empty(), "Expected at least one cell");
@@ -434,7 +433,7 @@ async fn test_read_nonexistent_row() {
         table_name: bigtable.get_full_table_name(TABLE_NAME),
         rows_limit: 1,
         rows: Some(RowSet {
-            row_keys: vec!["nonexistent_key_12345".to_owned().into_bytes()],
+            row_keys: vec!["nonexistent_key_12345".to_owned().into()],
             row_ranges: vec![],
         }),
         ..ReadRowsRequest::default()
