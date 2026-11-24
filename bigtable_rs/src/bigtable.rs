@@ -4,6 +4,7 @@
 //! Example usage:
 //! ```rust,no_run
 //! use bigtable_rs::bigtable;
+//! use bytes::Bytes;
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::row_filter::{Chain, Filter};
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::row_range::{EndKey, StartKey};
 //! use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{ReadRowsRequest, RowFilter, RowRange, RowSet};
@@ -43,8 +44,8 @@
 //!         rows: Some(RowSet {
 //!             row_keys: vec![], // use this field to put keys for reading specific rows
 //!             row_ranges: vec![RowRange {
-//!                 start_key: Some(StartKey::StartKeyClosed(key_start.into_bytes())),
-//!                 end_key: Some(EndKey::EndKeyOpen(key_end.into_bytes())),
+//!                 start_key: Some(StartKey::StartKeyClosed(key_start.into())),
+//!                 end_key: Some(EndKey::EndKeyOpen(key_end.into())),
 //!             }],
 //!         }),
 //!         filter: Some(RowFilter {
@@ -54,7 +55,7 @@
 //!                         filter: Some(Filter::FamilyNameRegexFilter("cf1".to_owned())),
 //!                     },
 //!                     RowFilter {
-//!                         filter: Some(Filter::ColumnQualifierRegexFilter("c1".as_bytes().to_vec())),
+//!                         filter: Some(Filter::ColumnQualifierRegexFilter(Bytes::from_static(b"c1"))),
 //!                     },
 //!                     RowFilter {
 //!                         filter: Some(Filter::CellsPerColumnLimitFilter(1)),
@@ -70,13 +71,13 @@
 //!
 //!     // simply print results for example usage
 //!     response.into_iter().for_each(|(key, data)| {
-//!         println!("------------\n{}", String::from_utf8(key.clone()).unwrap());
+//!         println!("------------\n{}", std::str::from_utf8(&key).unwrap());
 //!         data.into_iter().for_each(|row_cell| {
 //!             println!(
 //!                 "    [{}:{}] \"{}\" @ {}",
 //!                 row_cell.family_name,
-//!                 String::from_utf8(row_cell.qualifier).unwrap(),
-//!                 String::from_utf8(row_cell.value).unwrap(),
+//!                 std::str::from_utf8(&row_cell.qualifier).unwrap(),
+//!                 std::str::from_utf8(&row_cell.value).unwrap(),
 //!                 row_cell.timestamp_micros
 //!             )
 //!         })
@@ -91,6 +92,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use backoff::backoff::Backoff;
+use bytes::Bytes;
 use futures_util::Stream;
 use gcp_auth::TokenProvider;
 use log::info;
@@ -108,6 +111,7 @@ use tower::ServiceBuilder;
 
 use crate::auth_service::AuthSvc;
 use crate::bigtable::read_rows::{decode_read_rows_response, decode_read_rows_response_stream};
+use crate::util::RetryPolicy;
 use crate::{root_ca_certificate, util::get_row_range_from_prefix};
 use googleapis_tonic_google_bigtable_v2::google::bigtable::v2::{
     bigtable_client::BigtableClient, MutateRowRequest, MutateRowResponse, MutateRowsRequest,
@@ -145,8 +149,8 @@ impl_routing_metadata!(MutateRowsRequest);
 impl_routing_metadata!(CheckAndMutateRowRequest);
 impl_routing_metadata!(SampleRowKeysRequest);
 
-/// An alias for Vec<u8> as row key
-type RowKey = Vec<u8>;
+/// An alias for Bytes as row key
+pub type RowKey = Bytes;
 /// A convenient Result type
 type Result<T> = std::result::Result<T, Error>;
 
@@ -154,8 +158,8 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub struct RowCell {
     pub family_name: String,
-    pub qualifier: Vec<u8>,
-    pub value: Vec<u8>,
+    pub qualifier: Bytes,
+    pub value: Bytes,
     pub timestamp_micros: i64,
     pub labels: Vec<String>,
 }
@@ -285,6 +289,7 @@ pub struct BigTableConnection {
     table_prefix: Arc<String>,
     instance_prefix: Arc<String>,
     timeout: Arc<Option<Duration>>,
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl BigTableConnection {
@@ -414,6 +419,7 @@ impl BigTableConnection {
                     table_prefix: Arc::new(table_prefix),
                     instance_prefix: Arc::new(instance_prefix),
                     timeout: Arc::new(timeout),
+                    retry_policy: None,
                 })
             }
         }
@@ -494,6 +500,7 @@ impl BigTableConnection {
                 project_id, instance_name
             )),
             timeout: Arc::new(timeout),
+            retry_policy: None,
         })
     }
 
@@ -507,6 +514,7 @@ impl BigTableConnection {
             instance_prefix: self.instance_prefix.clone(),
             table_prefix: self.table_prefix.clone(),
             timeout: self.timeout.clone(),
+            retry_policy: self.retry_policy.clone(),
         }
     }
 
@@ -516,6 +524,12 @@ impl BigTableConnection {
         config_fn: fn(BigtableClient<AuthSvc>) -> BigtableClient<AuthSvc>,
     ) {
         self.client = config_fn(self.client.clone());
+    }
+
+    /// Set this to `Some` to let the client automatically retry in case
+    /// of failure. This comes at the cost of cloning.
+    pub fn set_retry_policy(&mut self, policy: Option<RetryPolicy>) {
+        self.retry_policy = policy;
     }
 }
 
@@ -562,21 +576,80 @@ pub struct BigTable {
     instance_prefix: Arc<String>,
     table_prefix: Arc<String>,
     timeout: Arc<Option<Duration>>,
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl BigTable {
+    /// Helper to run actions with a potential retry upon failure
+    async fn with_retry<F, A, R>(&mut self, f: F, a: A) -> std::result::Result<R, Error>
+    where
+        A: Clone,
+        F: for<'b> AsyncFn(
+            &'b mut BigtableClient<AuthSvc>,
+            A,
+            &Option<Duration>,
+        ) -> std::result::Result<R, Error>,
+    {
+        if let Some(retry_policy) = &self.retry_policy {
+            // We have a retry policy, make sure to reset the policy
+            // before going entering the loop.
+            let mut retry_policy = retry_policy.clone();
+            retry_policy.backoff.reset();
+            self.retry_loop(retry_policy, f, a).await
+        } else {
+            // No retry, so no cloning needed
+            f(&mut self.client, a, self.timeout.as_ref()).await
+        }
+    }
+
+    /// Retry loop with backoff policy
+    async fn retry_loop<F, A, R>(
+        &mut self,
+        mut retry_policy: RetryPolicy,
+        f: F,
+        a: A,
+    ) -> std::result::Result<R, Error>
+    where
+        A: Clone,
+        F: for<'b> AsyncFn(
+            &'b mut BigtableClient<AuthSvc>,
+            A,
+            &Option<Duration>,
+        ) -> std::result::Result<R, Error>,
+    {
+        let r = f(&mut self.client, a.clone(), self.timeout.as_ref()).await;
+        match r {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                let code = match e {
+                    Error::RpcError(ref c) => Some(c.code()),
+                    _ => None,
+                };
+                match retry_policy.next_backoff(code) {
+                    Some(d) => {
+                        tokio::time::sleep(d).await;
+                        Box::pin(self.retry_loop(retry_policy, f, a)).await
+                    }
+                    None => Err(e),
+                }
+            }
+        }
+    }
+
     /// Wrapped `check_and_mutate_row` method
     pub async fn check_and_mutate_row(
         &mut self,
         request: CheckAndMutateRowRequest,
     ) -> Result<CheckAndMutateRowResponse> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self
-            .client
-            .check_and_mutate_row(tonic_req)
-            .await?
-            .into_inner();
-        Ok(response)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.check_and_mutate_row(tonic_req).await?.into_inner();
+                Ok(response)
+            },
+            request,
+        )
+        .await
     }
 
     /// Wrapped `read_rows` method
@@ -584,16 +657,22 @@ impl BigTable {
         &mut self,
         request: ReadRowsRequest,
     ) -> Result<Vec<(RowKey, Vec<RowCell>)>> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.read_rows(tonic_req).await?.into_inner();
-        decode_read_rows_response(self.timeout.as_ref(), response).await
+        self.with_retry(
+            async |client, request, timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.read_rows(tonic_req).await?.into_inner();
+                decode_read_rows_response(timeout, response).await
+            },
+            request,
+        )
+        .await
     }
 
     /// Provide `read_rows_with_prefix` method to allow using a prefix as key
     pub async fn read_rows_with_prefix(
         &mut self,
         mut request: ReadRowsRequest,
-        prefix: Vec<u8>,
+        prefix: impl Into<Bytes>,
     ) -> Result<Vec<(RowKey, Vec<RowCell>)>> {
         let row_range = get_row_range_from_prefix(prefix);
         request.rows = Some(RowSet {
@@ -601,9 +680,15 @@ impl BigTable {
             row_ranges: vec![row_range],
         });
 
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.read_rows(tonic_req).await?.into_inner();
-        decode_read_rows_response(self.timeout.as_ref(), response).await
+        self.with_retry(
+            async |client, request, timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.read_rows(tonic_req).await?.into_inner();
+                decode_read_rows_response(timeout, response).await
+            },
+            request,
+        )
+        .await
     }
 
     /// Streaming support for `read_rows` method
@@ -611,17 +696,23 @@ impl BigTable {
         &mut self,
         request: ReadRowsRequest,
     ) -> Result<impl Stream<Item = Result<(RowKey, Vec<RowCell>)>>> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.read_rows(tonic_req).await?.into_inner();
-        let stream = decode_read_rows_response_stream(response).await;
-        Ok(stream)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.read_rows(tonic_req).await?.into_inner();
+                let stream = decode_read_rows_response_stream(response).await;
+                Ok(stream)
+            },
+            request,
+        )
+        .await
     }
 
     /// Streaming support for `read_rows_with_prefix` method
     pub async fn stream_rows_with_prefix(
         &mut self,
         mut request: ReadRowsRequest,
-        prefix: Vec<u8>,
+        prefix: impl Into<Bytes>,
     ) -> Result<impl Stream<Item = Result<(RowKey, Vec<RowCell>)>>> {
         let row_range = get_row_range_from_prefix(prefix);
         request.rows = Some(RowSet {
@@ -629,10 +720,16 @@ impl BigTable {
             row_ranges: vec![row_range],
         });
 
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.read_rows(tonic_req).await?.into_inner();
-        let stream = decode_read_rows_response_stream(response).await;
-        Ok(stream)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.read_rows(tonic_req).await?.into_inner();
+                let stream = decode_read_rows_response_stream(response).await;
+                Ok(stream)
+            },
+            request,
+        )
+        .await
     }
 
     /// Wrapped `sample_row_keys` method
@@ -640,9 +737,15 @@ impl BigTable {
         &mut self,
         request: SampleRowKeysRequest,
     ) -> Result<Streaming<SampleRowKeysResponse>> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.sample_row_keys(tonic_req).await?.into_inner();
-        Ok(response)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.sample_row_keys(tonic_req).await?.into_inner();
+                Ok(response)
+            },
+            request,
+        )
+        .await
     }
 
     /// Wrapped `mutate_row` method
@@ -650,9 +753,15 @@ impl BigTable {
         &mut self,
         request: MutateRowRequest,
     ) -> Result<Response<MutateRowResponse>> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.mutate_row(tonic_req).await?;
-        Ok(response)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.mutate_row(tonic_req).await?;
+                Ok(response)
+            },
+            request,
+        )
+        .await
     }
 
     /// Wrapped `mutate_rows` method
@@ -660,9 +769,15 @@ impl BigTable {
         &mut self,
         request: MutateRowsRequest,
     ) -> Result<Streaming<MutateRowsResponse>> {
-        let tonic_req = Self::add_routing_header(request.into_request())?;
-        let response = self.client.mutate_rows(tonic_req).await?.into_inner();
-        Ok(response)
+        self.with_retry(
+            async |client, request, _timeout| {
+                let tonic_req = Self::add_routing_header(request.into_request())?;
+                let response = client.mutate_rows(tonic_req).await?.into_inner();
+                Ok(response)
+            },
+            request,
+        )
+        .await
     }
 
     // Calls prepare_query first if `prepared_query` field is empty and clear the query string

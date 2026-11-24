@@ -12,7 +12,7 @@ readme = "../README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-googleapis-tonic-google-bigtable-v2 = "0.39.0"
+googleapis-tonic-google-bigtable-v2 = { version = "0.39.0", default-features = false, features = ["bytes", "hash-map"] }
 # tonic, prost, and prost-types are need for build generated rs files
 http = "1.1.0"
 hyper-util = { version = "0.1.7", features = ["tokio"] }
@@ -21,11 +21,13 @@ tonic = { version = "0.14.2", features = ["transport"] }
 tonic-prost = "0.14.2"
 tower = { version = "0.5.1", features = ["util"] }
 # end of above part
+bytes = "1.10.1"
 futures-util = "0.3.31"
 gcp_auth = { version = "0.13.0", default-features = false }
 log = "0.4.20"
 thiserror = "2.0.3"
 urlencoding = "2.1.3"
+backoff = { version = "0.4.0", features = ["tokio"] }
 
 [features]
 default = ["gcp-auth-aws-lc-rs", "tonic-tls-aws-lc"]
@@ -40,8 +42,8 @@ integration_tests = []
 
 
 [dev-dependencies]
-googleapis-tonic-google-bigtable-v2 = "0.39.0"
-googleapis-tonic-google-bigtable-admin-v2 = "0.45.0"
+googleapis-tonic-google-bigtable-v2 = { version = "0.39.0", default-features = false, features = ["bytes", "hash-map"] }
+googleapis-tonic-google-bigtable-admin-v2 = { version = "0.45.0", default-features = false, features = ["bytes", "hash-map"] }
 env_logger = "0.11.1"
 futures-util = "0.3.31"
 prost = "0.14.1"

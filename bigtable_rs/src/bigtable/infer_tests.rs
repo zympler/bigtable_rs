@@ -10,7 +10,7 @@ fn make_val(kind: value::Kind) -> Value {
 
 #[test]
 fn infer_type_bytes() {
-    let t = infer_value_type("p", &make_val(value::Kind::BytesValue(vec![]))).unwrap();
+    let t = infer_value_type("p", &make_val(value::Kind::BytesValue(Default::default()))).unwrap();
     assert!(matches!(t.kind, Some(r#type::Kind::BytesType(_))));
 }
 
@@ -65,7 +65,8 @@ fn array_requires_explicit_type() {
 
 #[test]
 fn raw_value_rejected() {
-    let err = infer_value_type("p", &make_val(value::Kind::RawValue(vec![]))).unwrap_err();
+    let err =
+        infer_value_type("p", &make_val(value::Kind::RawValue(Default::default()))).unwrap_err();
     assert!(err.to_string().contains("raw values cannot be used"));
 }
 
