@@ -22,7 +22,7 @@ tonic-prost = "0.14.2"
 tower = { version = "0.5.1", features = ["util"] }
 # end of above part
 futures-util = "0.3.31"
-gcp_auth = { version = "0.12.7", default-features = false }
+gcp_auth = { version = "0.13.0", default-features = false }
 log = "0.4.20"
 thiserror = "2.0.3"
 urlencoding = "2.1.3"
